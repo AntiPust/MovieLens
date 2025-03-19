@@ -1,0 +1,479 @@
+--MovieLens Dataset - 100K Ratings - https://www.kaggle.com/datasets/sriharshabsprasad/movielens-dataset-100k-ratings
+
+
+--Table links.csv:
+
+--movieId - идентификатор фильмов, используемый https://movielens.org. Например, фильм «История игрушек» имеет ссылку https://movielens.org/movies/1
+--imdbId - идентификатор фильмов, используемый http://www.imdb.com. Например, фильм «История игрушек» имеет ссылку http://www.imdb.com/title/tt0114709/
+--tmdbId - идентификатор фильмов, используемый https://www.themoviedb.org. Например, фильм «История игрушек» имеет ссылку https://www.themoviedb.org/movie/862
+
+
+--Table movies.csv:
+
+--movieId - id фильма
+--title - название
+--genres - жанры (Action/Adventure/Animation/Children's/Comedy/Crime/Documentary/Drama/Fantasy/Film-Noir/Horror/Musical/Mystery/Romance/Sci-Fi-Thriller/War/Western/(no genres listed))
+
+
+--Table ratings.csv:
+
+--userId - id зрителя
+--movieId - id фильма
+--rating - рейтинг
+--timestamp - временная метка, представляет собой секунды с полуночи по всемирному координированному времени (UTC) 1 января 1970 года. 
+
+ 
+--Table tags.csv:
+
+--userId - id зрителя
+--movieId - id фильма
+--tag - тег
+--timestamp - временная метка, представляет собой секунды с полуночи по всемирному координированному времени (UTC) 1 января 1970 года. 
+
+
+--Чтобы нам вывести дату и время столбца timestamp в таблицах (ratings, tags), добавим в них столбцы (rating_date и tag_date), 
+чтобы преобразовать в toDateTime(timestamp) AS rating_date, toDateTime(timestamp) AS tags_date, далее переименуем и обновим их
+
+CREATE TABLE ratings_new (
+    userId UInt32,
+    movieId UInt32,
+    rating Float32,
+    timestamp UInt32,
+    rating_date DateTime
+) ENGINE = MergeTree()
+ORDER BY (userId, movieId);
+
+INSERT INTO ratings_new
+SELECT 
+    userId, 
+    movieId, 
+    rating, 
+    timestamp, 
+    toDateTime(timestamp) AS rating_date
+FROM 
+    ratings;
+
+RENAME TABLE 
+    ratings TO ratings_old,
+    ratings_new TO ratings;
+    
+DROP TABLE ratings_old; 
+
+
+CREATE TABLE tags_new (
+    userId UInt32,
+    movieId UInt32,
+    tag String,
+    timestamp UInt32,
+    tag_date DateTime
+) ENGINE = MergeTree()
+ORDER BY (userId, movieId);
+
+INSERT INTO tags_new
+SELECT 
+    userId, 
+    movieId, 
+    tag, 
+    timestamp, 
+    toDateTime(timestamp) AS tag_date
+FROM 
+    tags;
+
+RENAME TABLE 
+    tags TO tags_old,
+    tags_new TO tags;
+    
+DROP TABLE tags_old; 
+
+
+--Проверим таблицы на наличие дубликатов и пропусков. Дубликатов и пропусков нет
+
+SELECT *, COUNT(*) AS count
+FROM links
+GROUP BY * 
+HAVING count > 1;
+
+SELECT *, COUNT(*) AS count
+FROM movies
+GROUP BY * 
+HAVING count > 1;
+
+SELECT *, COUNT(*) AS count
+FROM ratings
+GROUP BY * 
+HAVING count > 1;
+
+SELECT *, COUNT(*) AS count
+FROM tags
+GROUP BY * 
+HAVING count > 1;
+
+
+SELECT *
+FROM links
+WHERE 
+    movieId is NULL OR 
+    imdbId is NULL OR 
+    tmdbId is NULL;
+   
+SELECT *
+FROM movies
+WHERE 
+    movieId is NULL OR 
+    title is NULL OR title = '' OR
+    genres is NULL OR genres = '';   
+
+SELECT *
+FROM ratings
+WHERE 
+    userId is NULL OR 
+    movieId is NULL OR 
+    rating is NULL OR timestamp is NULL OR
+    timestamp is NULL OR
+    rating_date is NULL;
+   
+SELECT *
+FROM tags
+WHERE 
+    userId is NULL OR 
+    movieId is NULL OR 
+    tag is NULL OR tag = '' OR
+    timestamp is NULL OR
+    tag_date is NULL;
+
+
+--Количество фильмов, няходящихся в таблице movies - 9742 
+--Количество уникальных зрителей, поставивших оценку - 611
+--Количество фильмов, которым поставили оценку - 9725
+
+CREATE TABLE movies_total_inf (
+    total_movies UInt32,
+    unique_users_count UInt32,
+    total_rating_movies UInt32,
+) ENGINE = MergeTree()
+ORDER BY (total_movies);
+
+INSERT INTO movies_total_inf
+SELECT 
+	COUNT(DISTINCT m.movieId) AS total_movies,
+	COUNT(DISTINCT r.userId) AS unique_users_count,
+	COUNT(DISTINCT r.movieId) AS total_rating_movies
+FROM movies m LEFT JOIN
+ratings r ON m.movieId = r.movieId;
+
+
+--Средний рейтинг на зрителя, на всех зрителей и количество оценок, оставленных зрителем по убыванию
+
+CREATE TABLE user_avg_rating (
+    userId UInt32,
+    count_ratings UInt32,
+    user_avg_rating Float32,
+    total_user_avg_rating Float32
+) ENGINE = MergeTree()
+ORDER BY (userId);
+
+INSERT INTO user_avg_rating
+SELECT 
+	userId, 
+	COUNT(rating) AS count_ratings,
+	ROUND(AVG(rating), 2) AS user_avg_rating, 
+	ROUND(AVG(AVG(rating)) over (), 2) AS total_user_avg_rating
+FROM 
+	ratings
+GROUP BY 
+	userId
+ORDER BY 
+	user_avg_rating DESC, count_ratings DESC;
+
+
+--Средний рейтинг фильма с жанрами и количеством оценивших зрителей
+
+CREATE TABLE movie_avg_rating (
+    title String,
+    genres String,
+    movie_avg_rating Float32,
+    count_users_for_movie UInt32 
+) ENGINE = MergeTree()
+ORDER BY (title);
+
+INSERT INTO movie_avg_rating
+WITH data_data AS (
+    SELECT m.title AS title,
+    ROUND(AVG(r.rating), 2) AS movie_avg_rating,
+    COUNT(r.userId) AS count_users_for_movie
+    FROM ratings r 
+    LEFT JOIN movies m ON r.movieId = m.movieId
+    GROUP BY m.title
+    ORDER BY movie_avg_rating DESC, count_users_for_movie DESC, title ASC
+)
+SELECT title, m.genres, movie_avg_rating, count_users_for_movie
+FROM data_data d
+INNER JOIN movies m ON d.title = m.title;
+
+
+--Жанры фильмов по убыванию среднего рейтинга и количеству поставленных оценок
+
+CREATE TABLE genre_avg_rating (
+    genre String,
+    genre_avg_rating Float32,
+    count_users_for_genre UInt32 
+) ENGINE = MergeTree()
+ORDER BY (genre);
+
+INSERT INTO genre_avg_rating
+SELECT
+    genre,
+    ROUND(AVG(r.rating), 2) AS genre_avg_rating,
+    COUNT(r.userId) AS count_users_for_genre
+FROM ratings r
+LEFT JOIN movies m ON r.movieId = m.movieId
+ARRAY JOIN 
+        splitByString('|', m.genres) AS genre
+GROUP BY genre 
+ORDER BY genre_avg_rating DESC, count_users_for_genre DESC; 
+
+
+--Жанры фильмов по убыванию среднего рейтинга и количеству поставленных оценок по годам
+
+CREATE TABLE genre_year_avg_rating (
+	year UInt32,
+    genre String,
+    genre_avg_rating Float32,
+    count_users_for_genre UInt32 
+) ENGINE = MergeTree()
+ORDER BY (year, genre);
+
+INSERT INTO genre_year_avg_rating
+SELECT
+    toYear(r.rating_date) AS year,
+    genre,
+    ROUND(AVG(r.rating), 2) AS genre_avg_rating,
+    COUNT(r.userId) AS count_users_for_genre
+FROM ratings r
+LEFT JOIN movies m ON r.movieId = m.movieId
+ARRAY JOIN 
+    splitByString('|', m.genres) AS genre
+GROUP BY year, genre 
+ORDER BY year, genre, genre_avg_rating DESC, count_users_for_genre DESC; 
+
+
+--Количество поставленных оценок и уникальных зрителей их поставивших по годам. 
+--Также будем считать, что userId не может поставить более одной оценки за один фильм (movieId).
+
+CREATE TABLE year_count_ratings_unique_users (
+	year UInt32,
+    count_rating_movies UInt32,
+    count_unique_users UInt32 
+) ENGINE = MergeTree()
+ORDER BY (year);
+
+INSERT INTO year_count_ratings_unique_users
+SELECT 
+    toYear(rating_date) AS year,
+    COUNT(movieId) AS count_rating_movies,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM ratings
+GROUP BY year
+ORDER BY year;
+
+
+--Общее количество поставленных оценок и уникальных зрителей их поставивших по временному интервалу
+
+CREATE TABLE total_interval_ratings (
+	time_interval String,
+    count_movie_ratings UInt32,
+    count_unique_users UInt32 
+) ENGINE = MergeTree()
+ORDER BY (time_interval);
+
+INSERT INTO total_interval_ratings
+SELECT 
+    CASE 
+        WHEN toHour(rating_date) >= 0 AND toHour(rating_date) < 6 THEN '00:00 - 06:00'
+        WHEN toHour(rating_date) >= 6 AND toHour(rating_date) < 12 THEN '06:00 - 12:00'
+        WHEN toHour(rating_date) >= 12 AND toHour(rating_date) < 18 THEN '12:00 - 18:00'
+        WHEN toHour(rating_date) >= 18 AND toHour(rating_date) < 24 THEN '18:00 - 00:00'
+    END AS time_interval,
+    COUNT(movieId) AS count_movie_ratings,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM 
+    ratings
+GROUP BY 
+    time_interval
+ORDER BY 
+    time_interval;
+
+
+--Количество поставленных оценок и уникальных зрителей их поставивших по временному интервалу по годам 
+
+CREATE TABLE year_interval_ratings (
+	year UInt32, 
+	time_interval String,
+    count_movie_ratings UInt32,
+    count_unique_users UInt32 
+) ENGINE = MergeTree()
+ORDER BY (year, time_interval);
+
+INSERT INTO year_interval_ratings
+SELECT 
+    toYear(rating_date) AS year,
+    CASE 
+        WHEN toHour(rating_date) >= 0 AND toHour(rating_date) < 6 THEN '00:00 - 06:00'
+        WHEN toHour(rating_date) >= 6 AND toHour(rating_date) < 12 THEN '06:00 - 12:00'
+        WHEN toHour(rating_date) >= 12 AND toHour(rating_date) < 18 THEN '12:00 - 18:00'
+        WHEN toHour(rating_date) >= 18 AND toHour(rating_date) < 24 THEN '18:00 - 00:00'
+    END AS time_interval,
+    COUNT(movieId) AS count_movie_ratings,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM 
+    ratings
+GROUP BY 
+    year, time_interval
+ORDER BY 
+    year, time_interval;
+
+
+--Количество оцененных жанров с разбивкой по годам и временному интервалу
+
+CREATE TABLE year_interval_genres_ratings (
+	year UInt32, 
+	time_interval String,
+    genre String,
+    count_ratings_for_genre UInt32 
+) ENGINE = MergeTree()
+ORDER BY (year, time_interval);
+
+INSERT INTO year_interval_genres_ratings
+SELECT
+    toYear(r.rating_date) AS year,
+    CASE 
+        WHEN toHour(r.rating_date) >= 0 AND toHour(r.rating_date) < 6 THEN '00:00 - 06:00'
+        WHEN toHour(r.rating_date) >= 6 AND toHour(r.rating_date) < 12 THEN '06:00 - 12:00'
+        WHEN toHour(r.rating_date) >= 12 AND toHour(r.rating_date) < 18 THEN '12:00 - 18:00'
+        WHEN toHour(r.rating_date) >= 18 AND toHour(r.rating_date) < 24 THEN '18:00 - 00:00'
+    END AS time_interval,
+    genre,
+    COUNT(r.userId) AS count_ratings_for_genre
+FROM ratings r
+LEFT JOIN movies m ON r.movieId = m.movieId
+ARRAY JOIN 
+        splitByString('|', m.genres) AS genre
+GROUP BY year, time_interval, genre 
+ORDER BY year, time_interval, count_ratings_for_genre DESC, genre ASC;
+
+
+--Топ 100 фильмов с количеством тегов по убыванию и уникальных зрителей их оставивших
+
+CREATE TABLE top_100_movies_tags (
+	title String, 
+	count_tags UInt32,
+    count_unique_users UInt32
+) ENGINE = MergeTree()
+ORDER BY (title);
+
+INSERT INTO top_100_movies_tags
+SELECT
+    m.title AS title,
+    COUNT(tag) AS count_tags,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM 
+	tags t LEFT JOIN movies m ON t.movieId = m.movieId 	
+GROUP BY title
+ORDER BY count_tags DESC, title ASC
+LIMIT 100;
+
+
+--Жанры с количеством тегов по убыванию и уникальных зрителей их оставивших
+
+CREATE TABLE genre_count_tags (
+	genre String, 
+    count_tags UInt32,
+    count_unique_users UInt32
+) ENGINE = MergeTree()
+ORDER BY (genre);
+
+INSERT INTO genre_count_tags
+SELECT
+    genre,
+    COUNT(tag) AS count_tags,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM 
+	tags t LEFT JOIN movies m ON t.movieId = m.movieId 
+ARRAY JOIN
+	splitByString('|', m.genres) AS genre
+GROUP BY genre
+ORDER BY count_tags DESC, genre ASC;
+
+
+--Жанры с количеством тегов по убыванию по годам и уникальных зрителей их оставивших
+
+CREATE TABLE year_genre_count_tags (
+	year UInt32,
+	genre String, 
+    count_tags UInt32,
+    count_unique_users UInt32
+) ENGINE = MergeTree()
+ORDER BY (year, genre);
+
+INSERT INTO year_genre_count_tags
+SELECT
+    toYear(t.tag_date) AS year,
+    genre,
+    COUNT(tag) AS count_tags,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM 
+	tags t LEFT JOIN movies m ON t.movieId = m.movieId 
+ARRAY JOIN
+	splitByString('|', m.genres) AS genre
+GROUP BY year, genre
+ORDER BY year, count_tags DESC, genre ASC;
+
+
+--Топ 100 тегов по убыванию с уникальными зрителями их оставивших
+
+CREATE TABLE top_100_tags (
+	tag String, 
+    count_tags UInt32,
+    count_unique_users UInt32
+) ENGINE = MergeTree()
+ORDER BY (tag);
+
+INSERT INTO top_100_tags
+SELECT
+    tag,
+    COUNT(tag) AS count_tags,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM
+    tags
+GROUP BY 
+    tag
+ORDER BY 
+	count_tags DESC, count_unique_users DESC, tag ASC
+LIMIT 100;
+	
+	
+--Количество оставленных тегов по убыванию с уникальными зрителями их оставивших по годам
+
+CREATE TABLE year_count_tags (
+	year UInt32,
+	tag String, 
+    count_tags UInt32,
+    count_unique_users UInt32
+) ENGINE = MergeTree()
+ORDER BY (year);
+
+INSERT INTO year_count_tags
+SELECT
+    toYear(tag_date) AS year,
+	tag,
+    COUNT(tag) AS count_tags,
+    COUNT(DISTINCT userId) AS count_unique_users
+FROM
+    tags
+GROUP BY 
+    year, tag
+ORDER BY 
+	year, count_tags DESC, count_unique_users DESC, tag ASC;
+	
+
+--Визуализируем полученные данные в Superset--
